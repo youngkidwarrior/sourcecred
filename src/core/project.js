@@ -44,6 +44,24 @@ const upgrades = {
   "0.3.1": upgradeFrom030,
 };
 
+/**
+ * Creates a new Project instance with default values.
+ *
+ * Note: the `id` field is required, as there's no sensible default.
+ */
+export function createProject(p: $Shape<Project>): Project {
+  if (!p.id) {
+    throw new Error("Project.id must be set");
+  }
+
+  return {
+    repoIds: [],
+    identities: [],
+    discourseServer: null,
+    ...p,
+  };
+}
+
 export function projectToJSON(p: Project): Compatible<Project> {
   return toCompat(COMPAT_INFO, p);
 }
