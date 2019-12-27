@@ -2,27 +2,54 @@
 // Implementation of `sourcecred init`
 
 import dedent from "../util/dedent";
-import {type RepoId, stringToRepoId} from "../core/repoId";
+import {type RepoId} from "../core/repoId";
 import {type Project, projectToJSON} from "../core/project";
 import type {Command} from "./command";
 import * as Common from "./common";
 import fs from "fs-extra";
 import process from "process";
-import read from "read";
 import path from "path";
-import {fetchGithubOrg} from "../plugins/github/fetchGithubOrg";
 import {type DiscourseServer} from "../plugins/discourse/loadDiscourse";
+import {specToProject} from "../plugins/github/specToProject";
+import * as NullUtil from "../util/null";
 
 function usage(print: (string) => void): void {
   print(
     dedent`\
-    usage: sourcecred init
+    usage: sourcecred init [--github GITHUB_SPEC [...]]
+                           [--discourse-url DISCOURSE_URL]
+                           [--force]
            sourcecred init --help
 
-    Sets up a new SourceCred instance, by interactively creating a SourceCred
-    project configuration, and saving it to 'sourcecred.json'.
+    Sets up a new SourceCred instance, by creating a SourceCred project
+    configuration, and saving it to 'sourcecred.json' within the current
+    directory.
+
+    Zero or more github specs may be provided; each GitHub spec can be of the
+    form OWNER/NAME (as in 'torvalds/linux') for loading a single repository,
+    or @owner (as in '@torvalds') for loading all repositories owned by a given
+    account.
+
+    A discourse url may be provided. The discourse url must be the full url of
+    a valid Discourse server, as in 'https://discourse.sourcecred.io'.
+
+    All of the GitHub specs, and the Discourse specification (if it exists)
+    will be combined into a single project, which is written to
+    sourcecred.json. The file may be manually modified to activate other
+    advanced features, such as identity map resolution.
 
     Arguments:
+        --github GITHUB_SPEC
+            A specification (in form 'OWNER/NAME' or '@OWNER') of GitHub
+            repositories to load.
+
+        --discourse-url DISCOURSE_URL
+            The url of a Discourse server to load.
+
+        --force
+            If provided, sourcecred init will overwrite pre-existing
+            sourcecred.json files.
+
         --help
             Show this help message and exit, as 'sourcecred help init'.
 
@@ -46,11 +73,33 @@ function die(std, message) {
 }
 
 const initCommand: Command = async (args, std) => {
+  let withForce = false;
+  let discourseUrl: ?string;
+  let githubSpecs: string[] = [];
+
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case "--help": {
         usage(std.out);
         return 0;
+      }
+      case "--github": {
+        if (++i >= args.length)
+          return die(std, "'--github' given without value");
+        githubSpecs.push(args[i]);
+        break;
+      }
+      case "--discourse": {
+        if (discourseUrl != undefined)
+          return die(std, "'--discourse' given multiple times");
+        if (++i >= args.length)
+          return die(std, "'--discourse' given without value");
+        discourseUrl = args[i];
+        break;
+      }
+      case "--force": {
+        withForce = true;
+        break;
       }
       default: {
         return die(std, `Unexpected argument ${args[i]}`);
@@ -59,67 +108,29 @@ const initCommand: Command = async (args, std) => {
   }
   const dir = process.cwd();
   const projectFilePath = path.join(dir, "sourcecred.json");
-  if (await fs.exists(projectFilePath)) {
-    return die(std, `Refusing to overwrite sourcecred.json file in ${dir}`);
+  if ((await fs.exists(projectFilePath)) && !withForce) {
+    return die(std, `Refusing to overwrite sourcecred.json without --force`);
   }
   const basename = path.basename(dir);
-  const name = await aread({
-    prompt: "Choose an instance name:",
-    default: basename,
-  });
-  std.out("");
 
-  let repoIds: RepoId[] = [];
   const githubToken = Common.githubToken();
-  if (githubToken == null) {
-    std.out("Skipping organization loading, as no GitHub token available.");
-  } else {
-    std.out("Now you can add any GitHub organizations you want to load.");
-    std.out("You'll have the option to load multiple orgs, one at a time.");
-    std.out("Leave a blank response when done adding orgs.");
-    std.out("You'll have the option to add individual repos next.");
-    while (true) {
-      const nextOrg = await aread({prompt: "The name of an org to add:"});
-      if (nextOrg === "") {
-        break;
-      } else {
-        const {repos} = await fetchGithubOrg(nextOrg, githubToken);
-        repoIds = [...repoIds, ...repos];
-      }
-    }
+  if (githubToken == null && githubSpecs.length > 0) {
+    return die(
+      std,
+      "Tried to load GitHub specs, but no GitHub token available."
+    );
   }
-  std.out("");
-
-  std.out("Now you can add individual GitHub repositories.");
-  std.out("Add them in format OWNER/NAME, like in torvalds/linux.");
-  std.out("Leave a blank response when done adding repos.");
-  while (true) {
-    const nextRepo = await aread({prompt: "The name of a repo to add:"});
-    if (nextRepo === "") {
-      break;
-    }
-    const repoId = stringToRepoId(nextRepo);
-    repoIds.push(repoId);
-  }
-  std.out("");
-
-  let discourseServer: DiscourseServer | null = null;
-  std.out("Now you can add a Discourse server url.");
-  std.out("It should begin with http:// or https://");
-  std.out("Leave blank if you don't want to add a Discourse server.");
-  let serverUrl = await aread({prompt: "Discourse server url, or blank"});
-  if (serverUrl !== "") {
-    if (!serverUrl.startsWith("https://") && !serverUrl.startsWith("http://")) {
-      return die(std, "serverUrl should start with http:// or https://");
-    }
-    if (serverUrl.endsWith("/")) {
-      serverUrl = serverUrl.slice(0, serverUrl.length - 1);
-    }
-    discourseServer = {serverUrl};
+  let repoIds: RepoId[] = [];
+  for (const spec of githubSpecs) {
+    const subproject = await specToProject(spec, NullUtil.get(githubToken));
+    repoIds = [...repoIds, ...subproject.repoIds];
   }
 
+  const discourseServer: DiscourseServer | null = discourseUrl
+    ? {serverUrl: discourseUrl}
+    : null;
   const project: Project = {
-    id: name,
+    id: basename,
     repoIds,
     discourseServer,
     identities: [],
@@ -128,22 +139,23 @@ const initCommand: Command = async (args, std) => {
   const projectJson = projectToJSON(project);
   await fs.writeFile(projectFilePath, JSON.stringify(projectJson, null, 2));
 
-  std.out("Done. Inspect `sourcecred.json` for results.");
+  std.out("Wrote project file to 'sourcecred.json'");
 
   return 0;
 };
 
-// Async version of `read`
-function aread(options): Promise<string> {
-  return new Promise((resolve, reject) => {
-    read(options, (error, result) => {
-      if (error) {
-        reject(error);
-      }
-      resolve(result);
-    });
-  });
-}
+/**
+// 1. Parse arguments
+
+export function parseArguments()
+
+export type GenProjectArgs = {|
+  +github: {|+githubToken: string, +specs: $ReadOnlyArray<string>|} | null,
+  +discourseUrl: string | null,
+  +id: string,
+|}
+export function genProject(githubSpecs: )
+*/
 
 export const help: Command = async (args, std) => {
   if (args.length === 0) {
