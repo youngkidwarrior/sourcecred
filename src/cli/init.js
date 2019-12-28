@@ -50,6 +50,10 @@ function usage(print: (string) => void): void {
             If provided, sourcecred init will overwrite pre-existing
             sourcecred.json files.
 
+        --print
+            If provided, sourcecred init will print the project to stdout
+            rather than writing it to sourcecred.json.
+
         --help
             Show this help message and exit, as 'sourcecred help init'.
 
@@ -73,43 +77,26 @@ function die(std, message) {
 }
 
 const initCommand: Command = async (args, std) => {
-  let withForce = false;
-  let discourseUrl: ?string;
-  let githubSpecs: string[] = [];
-
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      case "--help": {
-        usage(std.out);
-        return 0;
-      }
-      case "--github": {
-        if (++i >= args.length)
-          return die(std, "'--github' given without value");
-        githubSpecs.push(args[i]);
-        break;
-      }
-      case "--discourse": {
-        if (discourseUrl != undefined)
-          return die(std, "'--discourse' given multiple times");
-        if (++i >= args.length)
-          return die(std, "'--discourse' given without value");
-        discourseUrl = args[i];
-        break;
-      }
-      case "--force": {
-        withForce = true;
-        break;
-      }
-      default: {
-        return die(std, `Unexpected argument ${args[i]}`);
-      }
-    }
+  const maybeParsedArgs = parseArguments(args);
+  if (maybeParsedArguments.type === "FAILURE") {
+    return die(maybeParsedArgs.failure);
   }
+  const parsedArgs = maybeParsedArgs.result;
+  if (parsedArgs.wantsHelp) {
+    usage(std.out);
+    return 0;
+  }
+
+  const maybeProject = await generateProject(parsedArgs, Common.githubToken());
+  if (maybeProject.type === "FAILURE") {
+    return die(maybeProject.failure);
+  }
+  const project = maybeProject.result;
+
   const dir = process.cwd();
   const projectFilePath = path.join(dir, "sourcecred.json");
   if ((await fs.exists(projectFilePath)) && !withForce) {
-    return die(std, `Refusing to overwrite sourcecred.json without --force`);
+    return die(std, `refusing to overwrite sourcecred.json without --force`);
   }
   const basename = path.basename(dir);
 
@@ -117,7 +104,7 @@ const initCommand: Command = async (args, std) => {
   if (githubToken == null && githubSpecs.length > 0) {
     return die(
       std,
-      "Tried to load GitHub specs, but no GitHub token available."
+      "tried to load GitHub specs, but no GitHub token provided."
     );
   }
   let repoIds: RepoId[] = [];
@@ -144,18 +131,62 @@ const initCommand: Command = async (args, std) => {
   return 0;
 };
 
-/**
 // 1. Parse arguments
 
-export function parseArguments()
+type ResultOrFailureMessage<T> =
+  | {|+type: "RESULT", +result: T|}
+  | {|+type: "FAILURE", +message: string|};
 
-export type GenProjectArgs = {|
-  +github: {|+githubToken: string, +specs: $ReadOnlyArray<string>|} | null,
+type ParsedArguments = {|
+  +githubSpecs: $ReadOnlyArray<string>,
   +discourseUrl: string | null,
-  +id: string,
-|}
-export function genProject(githubSpecs: )
-*/
+  +useForce: boolean,
+  +wantsHelp: boolean,
+|};
+
+export function parseArguments(args): ResultOrFailureMessage<ParsedArguments> {
+  let withForce = false;
+  let discourseUrl: string | null = null;
+  let githubSpecs: string[] = [];
+  let wantsHelp = false;
+
+  for (let i = 0; i < args.length; i++) {
+    switch (args[i]) {
+      case "--help": {
+        wantsHelp = true;
+        break;
+      }
+      case "--github": {
+        if (++i >= args.length)
+          return {type: "FAILURE", message: "--github given without value"};
+        githubSpecs.push(args[i]);
+        break;
+      }
+      case "--discourse": {
+        if (discourseUrl != undefined)
+          return {type: "FAILURE", message: "--discourse given multiple times"};
+        if (++i >= args.length)
+          return {
+            type: "FAILURE",
+            message: "'--discourse' given without value",
+          };
+        discourseUrl = args[i];
+        break;
+      }
+      case "--force": {
+        withForce = true;
+        break;
+      }
+      default: {
+        return {type: "FAILURE", message: `Unexpected argument ${args[i]}`};
+      }
+    }
+  }
+  return {
+    type: "RESULT",
+    result: {withForce, discourseUrl, githubSpecs, wantsHelp},
+  };
+}
 
 export const help: Command = async (args, std) => {
   if (args.length === 0) {
