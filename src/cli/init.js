@@ -5,7 +5,7 @@ import stringify from "json-stable-stringify";
 import dedent from "../util/dedent";
 import {type RepoId} from "../core/repoId";
 import {type Project, projectToJSON, createProject} from "../core/project";
-import type {Command} from "./command";
+import type {Command, Stdio, ExitCode} from "./command";
 import * as Common from "./common";
 import fs from "fs-extra";
 import process from "process";
@@ -77,13 +77,16 @@ function usage(print: (string) => void): void {
   );
 }
 
-function die(std, message) {
+function die(std: Stdio, message) {
   std.err("fatal: " + message);
   std.err("fatal: run 'sourcecred help init' for help");
   return 1;
 }
 
-const initCommand: Command = async (args, std) => {
+/**
+ * Responsible for CLI argument parsing and control flow (usage or init?).
+ */
+const initCommand: Command = async (args, std: Stdio) => {
   let withForce = false;
   let printToStdOut = false;
   let discourseUrl: ?string;
@@ -130,17 +133,66 @@ const initCommand: Command = async (args, std) => {
       }
     }
   }
-  const dir = process.cwd();
-  const projectFilePath = path.join(dir, "sourcecred.json");
-  const fileAlreadyExists = await fs.exists(projectFilePath);
-  if (fileAlreadyExists && !(withForce || printToStdOut)) {
-    return die(std, `refusing to overwrite sourcecred.json without --force`);
+
+  return await init(std, {
+    withForce,
+    printToStdOut,
+    githubSpecs,
+    discourseUrl,
+  });
+};
+
+type ProjectGenerationOptions = {|
+  +withForce: boolean,
+  +printToStdOut: boolean,
+  +githubSpecs: string[],
+  +discourseUrl: ?string,
+|};
+
+/**
+ * Responsible for the init higher-level logic.
+ */
+async function init(
+  std: Stdio,
+  opts: ProjectGenerationOptions
+): Promise<ExitCode> {
+  const {withForce, printToStdOut, githubSpecs, discourseUrl} = opts;
+  try {
+    const dir = process.cwd();
+    const fileName = "sourcecred.json";
+    const projectFilePath = path.join(dir, fileName);
+
+    const fileAlreadyExists = await fs.exists(projectFilePath);
+    if (fileAlreadyExists && !(withForce || printToStdOut)) {
+      throw new Error(`refusing to overwrite ${fileName} without --force`);
+    }
+
+    const githubToken = Common.githubToken();
+    const project: Project = await generateProject(
+      githubToken,
+      githubSpecs,
+      discourseUrl
+    );
+
+    await outputProject(project, printToStdOut, projectFilePath, std.out);
+  } catch (e) {
+    return die(std, e.message);
+  }
+  return 0;
+}
+
+/**
+ * Responsible for creating a Project instance based on our specs.
+ */
+async function generateProject(
+  githubToken: ?string,
+  githubSpecs: string[],
+  discourseUrl: ?string
+): Promise<Project> {
+  if (!githubToken && githubSpecs.length > 0) {
+    throw new Error("tried to load GitHub specs, but no GitHub token provided");
   }
 
-  const githubToken = Common.githubToken();
-  if (!githubToken && githubSpecs.length > 0) {
-    return die(std, "tried to load GitHub specs, but no GitHub token provided");
-  }
   let repoIds: RepoId[] = [];
   for (const spec of githubSpecs) {
     const subproject = await specToProject(spec, NullUtil.get(githubToken));
@@ -150,24 +202,33 @@ const initCommand: Command = async (args, std) => {
   const discourseServer: DiscourseServer | null = discourseUrl
     ? {serverUrl: discourseUrl}
     : null;
-  const project: Project = createProject({
+
+  return createProject({
     // the id field is obsolete in the instance system, and will be
     // removed once we fully migrate to sourcecred instances.
     id: "obsolete-id",
     repoIds,
     discourseServer,
   });
+}
 
+/**
+ * Responsible for outputting a serialized Project.
+ */
+async function outputProject(
+  project: Project,
+  shouldPrint: boolean,
+  projectFilePath: string,
+  print: (string) => void
+): Promise<void> {
   const projectJson = projectToJSON(project);
   const stringified = stringify(projectJson, {space: 4});
-  if (printToStdOut) {
-    std.out(stringified);
+  if (shouldPrint) {
+    print(stringified);
   } else {
     await fs.writeFile(projectFilePath, stringified + "\n");
   }
-
-  return 0;
-};
+}
 
 export const help: Command = async (args, std) => {
   if (args.length === 0) {
