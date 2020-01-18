@@ -254,18 +254,13 @@ export class TimelineCred {
       addressToCred.set(addr, addrCred);
     }
     const intervals = cred.map((x) => x.interval);
-    const preliminaryCred = new TimelineCred(
+    return new TimelineCred(
       graph,
       intervals,
       addressToCred,
       fullParams,
       plugins
     );
-    return preliminaryCred.reduceSize({
-      typePrefixes: types.nodeTypes.map((x) => x.prefix),
-      nodesPerType: 100,
-      fullInclusionPrefixes: scorePrefixes,
-    });
   }
 }
 
