@@ -32,9 +32,11 @@ export type Weights = {|
 |};
 
 /**
- * Creates new, empty weights.
+ * Creates default (i.e. empty) weights.
+ *
+ * When the weights are empty, defaults will be used for every type and node.
  */
-export function empty(): Weights {
+export function defaultWeights(): Weights {
   return {
     nodeWeights: new Map(),
     edgeWeights: new Map(),

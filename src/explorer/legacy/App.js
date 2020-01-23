@@ -12,8 +12,7 @@ import {type NodeAddressT} from "../../core/graph";
 import {PagerankTable} from "./pagerankTable/Table";
 import {WeightConfig} from "../weights/WeightConfig";
 import {WeightsFileManager} from "../weights/WeightsFileManager";
-import * as Weights from "../../core/weights";
-import {type Weights as WeightsT} from "../../core/weights";
+import {type Weights, defaultWeights} from "../../core/weights";
 import {Prefix as GithubPrefix} from "../../plugins/github/nodes";
 import {
   createStateTransitionMachine,
@@ -57,7 +56,7 @@ type Props = {|
 |};
 type State = {|
   appState: AppState,
-  weights: WeightsT,
+  weights: Weights,
 |};
 
 export function createApp(
@@ -73,7 +72,7 @@ export function createApp(
       super(props);
       this.state = {
         appState: initialState(this.props.projectId),
-        weights: Weights.empty(),
+        weights: defaultWeights(),
       };
       this.stateTransitionMachine = createSTM(
         () => this.state.appState,
@@ -86,7 +85,7 @@ export function createApp(
       const weightFileManager = (
         <WeightsFileManager
           weights={this.state.weights}
-          onWeightsChange={(weights: WeightsT) => {
+          onWeightsChange={(weights: Weights) => {
             this.setState({weights});
           }}
         />
